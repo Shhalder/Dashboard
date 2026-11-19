@@ -91,20 +91,50 @@ geojson, zips, access, rankings, analysis, level1, programs, stops = load_data()
 
 # ---------------------------------------------------------------- helpers
 
-def choropleth(data, column, title, colors="viridis", categories=None, range_color=None, hover=None):
-    hover = hover or {}
-    common = dict(geojson=geojson, locations="zip_code", featureidkey="properties.zip_code",
-                  center=MAP_CENTER, zoom=MAP_ZOOM, mapbox_style=MAP_STYLE, opacity=0.7,
-                  hover_name="label", hover_data=hover)
-    if categories:
-        fig = px.choropleth_mapbox(data, color=column, color_discrete_map=categories,
-                                category_orders={column: list(categories)}, **common)
+def show_chart(fig, **kwargs):
+    # outline maps load world_110m.json; it is served from the app's static/ folder
+    st.plotly_chart(fig, config={"topojsonURL": "app/static/", "displaylogo": False}, **kwargs)
+
+
+def street_basemap():
+    return st.session_state.get("street_basemap", False)
+
+
+def point_trace(lat, lon, **kwargs):
+    if street_basemap():
+        kwargs.get("marker", {}).pop("line", None)
+        return go.Scattermapbox(lat=lat, lon=lon, mode="markers", **kwargs)
+    return go.Scattergeo(lat=lat, lon=lon, mode="markers", **kwargs)
+
+
+def style_map(fig, height=600):
+    if street_basemap():
+        fig.update_layout(mapbox=dict(style=MAP_STYLE, center=MAP_CENTER, zoom=MAP_ZOOM))
     else:
-        fig = px.choropleth_mapbox(data, color=column, color_continuous_scale=colors, range_color=range_color, **common)
+        fig.update_geos(fitbounds="locations", visible=False, bgcolor="rgba(0,0,0,0)")
+    fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0),
+                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, font=dict(color="#222222"),
+                                  bgcolor="rgba(255,255,255,0.9)"))
+    return fig
+
+
+def choropleth(data, column, title, colors="viridis", categories=None, range_color=None, hover=None):
+    common = dict(geojson=geojson, locations="zip_code", featureidkey="properties.zip_code",
+                  hover_name="label", hover_data=hover or {})
+    if street_basemap():
+        draw = px.choropleth_mapbox
+        common.update(center=MAP_CENTER, zoom=MAP_ZOOM, mapbox_style=MAP_STYLE, opacity=0.7)
+    else:
+        draw = px.choropleth
+    if categories:
+        fig = draw(data, color=column, color_discrete_map=categories,
+                   category_orders={column: list(categories)}, **common)
+    else:
+        fig = draw(data, color=column, color_continuous_scale=colors, range_color=range_color, **common)
         fig.update_layout(coloraxis_colorbar=dict(title=title, thickness=12))
-    fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0),
-                      legend=dict(title=title, yanchor="top", y=0.99, xanchor="left", x=0.01,
-                                  bgcolor="rgba(255,255,255,0.85)"))
+    fig.update_traces(marker_line_width=0.5, marker_line_color="#FFFFFF")
+    style_map(fig)
+    fig.update_layout(legend_title_text=title)
     return fig
 
 
@@ -112,9 +142,9 @@ def add_programs(fig, shown):
     for affiliation, color in AFFILIATION_COLORS.items():
         part = shown[shown["Affiliation"] == affiliation]
         if len(part):
-            fig.add_trace(go.Scattermapbox(
-                lat=part["lat"], lon=part["lon"], mode="markers", name=f"{affiliation} program ({len(part)})",
-                marker=dict(size=11, color=color), text=part["Program Name"],
+            fig.add_trace(point_trace(
+                part["lat"], part["lon"], name=f"{affiliation} program ({len(part)})",
+                marker=dict(size=10, color=color, line=dict(width=1, color="#FFFFFF")), text=part["Program Name"],
                 customdata=part[["Program Type", "City"]].fillna("").values,
                 hovertemplate="<b>%{text}</b><br>%{customdata[0]}<br>%{customdata[1]}<extra></extra>"))
     return fig
@@ -170,7 +200,7 @@ def page_hotspots():
         fig = choropleth(zips, "Lit_P1", "Level 1 rate", colors="viridis_r")
 
     shown = filter_programs(affiliation, types)
-    st.plotly_chart(add_programs(fig, shown), use_container_width=True)
+    show_chart(add_programs(fig, shown), use_container_width=True)
 
     left, right, third = st.columns(3)
     left.metric("Programs shown", len(shown))
@@ -191,7 +221,7 @@ def page_levels():
 
     left, right = st.columns([3, 2])
     with left:
-        st.plotly_chart(choropleth(data, column, f"{level} rate",
+        show_chart(choropleth(data, column, f"{level} rate",
                                    colors="viridis_r" if level != "Level 3 or above" else "viridis"),
                         use_container_width=True)
     with right:
@@ -201,13 +231,13 @@ def page_levels():
                      color_discrete_sequence=[VERMILLION, ORANGE, SKY_BLUE])
         fig.update_layout(showlegend=False, height=300, margin=dict(t=30, b=0), yaxis_tickformat=".0%",
                           title="Distribution across the ZIP codes shown")
-        st.plotly_chart(fig, use_container_width=True)
+        show_chart(fig, use_container_width=True)
 
         top = data.nlargest(10, column)[["label", column]]
         fig = px.bar(top.sort_values(column), x=column, y="label", orientation="h",
                      color_discrete_sequence=[BLUE], title=f"10 highest {level} rates")
         fig.update_layout(height=300, margin=dict(t=30, b=0), xaxis_tickformat=".0%", yaxis_title="")
-        st.plotly_chart(fig, use_container_width=True)
+        show_chart(fig, use_container_width=True)
 
     table = data[["zip_code", "city", "total_population", "Lit_P1", "Lit_P2", "Lit_P3", "pct_poverty",
                   "pct_limited_english"]].sort_values(column, ascending=(level == "Level 3 or above"))
@@ -236,12 +266,12 @@ def page_trends():
     left, right = st.columns(2)
     with left:
         st.subheader(f"Level 1 rate, {year}")
-        st.plotly_chart(choropleth(data, year, "Level 1 rate", colors="viridis_r", range_color=(0, top)),
+        show_chart(choropleth(data, year, "Level 1 rate", colors="viridis_r", range_color=(0, top)),
                         use_container_width=True)
     with right:
         st.subheader(f"Change, {start} to {end}")
         largest = max(data["change"].abs().max(), 0.01)
-        st.plotly_chart(choropleth(data, "change", "Change", colors="PuOr_r", range_color=(-largest, largest)),
+        show_chart(choropleth(data, "change", "Change", colors="PuOr_r", range_color=(-largest, largest)),
                         use_container_width=True)
     st.caption("Orange = Level 1 rate rose (worse); purple = fell (better). ZIP codes with a missing, zero "
                "or repeated fill-in value for a year are left blank for that year.")
@@ -252,7 +282,7 @@ def page_trends():
     fig = px.line(lines, x="year", y="rate", color="label", markers=True,
                   color_discrete_sequence=[BLUE, VERMILLION, GREEN, ORANGE, PURPLE, SKY_BLUE])
     fig.update_layout(height=350, yaxis_tickformat=".0%", yaxis_title="Level 1 rate", legend_title="")
-    st.plotly_chart(fig, use_container_width=True)
+    show_chart(fig, use_container_width=True)
     download(data.drop(columns=["label"]), "level1_trends.csv")
 
 
@@ -282,10 +312,10 @@ def page_accessibility():
 
     if show_stops:
         shown_stops = stops if not mode_filter else stops[stops["modes"].isin(mode_filter)]
-        fig.add_trace(go.Scattermapbox(lat=shown_stops["stop_lat"], lon=shown_stops["stop_lon"], mode="markers",
-                                    name=f"MTS stops ({len(shown_stops):,})", marker=dict(size=4, color="#333333"),
-                                    text=shown_stops["stop_name"], hovertemplate="%{text}<extra></extra>"))
-    st.plotly_chart(fig, use_container_width=True)
+        fig.add_trace(point_trace(shown_stops["stop_lat"], shown_stops["stop_lon"],
+                                  name=f"MTS stops ({len(shown_stops):,})", marker=dict(size=4, color="#8A94A6"),
+                                  text=shown_stops["stop_name"], hovertemplate="%{text}<extra></extra>"))
+    show_chart(fig, use_container_width=True)
 
     rated = data[zips["eligible"].values]
     a, b, c = st.columns(3)
@@ -334,7 +364,7 @@ def page_gaps():
                  color_discrete_map={"Critical here": ORANGE, "Not critical": BLUE},
                  labels={severity: "Gap severity (0–100)"})
     fig.update_layout(height=max(350, 22 * top_n), yaxis_title="", legend=dict(orientation="h", y=1.05))
-    st.plotly_chart(fig, use_container_width=True)
+    show_chart(fig, use_container_width=True)
 
     columns = ["zip_code", "city", rank, severity, "adults_below_level3", "programs_10km_affiliated",
                "programs_10km_independent", "gap_severity_affiliated", "gap_severity_all", "severity_change",
@@ -363,7 +393,7 @@ def page_score():
 
     left, right = st.columns([3, 2])
     with left:
-        st.plotly_chart(choropleth(data, column, measure, colors="viridis", range_color=(0, 100),
+        show_chart(choropleth(data, column, measure, colors="viridis", range_color=(0, 100),
                                    hover={"score_rank": True, "priority_tier": True}), use_container_width=True)
     with right:
         options = data[data["eligible"]].sort_values("score_rank")["label"].tolist()
@@ -377,7 +407,7 @@ def page_score():
             fig = px.bar(subs, x="value", y="part", orientation="h", range_x=(0, 100),
                          color="part", color_discrete_sequence=[VERMILLION, ORANGE, GREEN])
             fig.update_layout(height=200, showlegend=False, margin=dict(t=10, b=0), yaxis_title="", xaxis_title="")
-            st.plotly_chart(fig, use_container_width=True)
+            show_chart(fig, use_container_width=True)
 
             components = {
                 "Literacy level index": "c_literacy_level_index", "Demographic risk": "c_demographic_risk",
@@ -388,7 +418,7 @@ def page_score():
             fig = px.bar(parts, x="value", y="component", orientation="h", range_x=(0, 100),
                          color_discrete_sequence=[BLUE], title="Components (0–100, higher = more need)")
             fig.update_layout(height=320, margin=dict(t=40, b=0), yaxis_title="", xaxis_title="")
-            st.plotly_chart(fig, use_container_width=True)
+            show_chart(fig, use_container_width=True)
             st.caption(f"Without independent programs the score would be {row['literacy_score_affiliated']:.1f} "
                        f"(+{row['independent_program_effect']:.1f}). Nearest library: {row['nearest_library']} "
                        f"({row['library_km']:.1f} km).")
@@ -429,11 +459,13 @@ def page_directory():
                  column_config={"Website": st.column_config.LinkColumn("Website")})
     mapped = shown[shown["mappable"]]
     if len(mapped):
-        fig = go.Figure()
+        outline = zips.assign(area="ZIP code")
+        fig = choropleth(outline, "area", "", categories={"ZIP code": "#D9DEE5"})
+        fig.update_traces(showlegend=False, selector=dict(type="choropleth"))
+        fig.update_traces(showlegend=False, selector=dict(type="choroplethmapbox"))
         add_programs(fig, mapped)
-        fig.update_layout(mapbox=dict(style=MAP_STYLE, center=MAP_CENTER, zoom=MAP_ZOOM), height=450,
-                          margin=dict(l=0, r=0, t=0, b=0), legend=dict(x=0.01, y=0.99))
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(height=450)
+        show_chart(fig, use_container_width=True)
     st.caption(f"{(~shown['mappable']).sum()} of the programs listed have no mappable address in the county "
                "(online, PO box, or outside San Diego County).")
     download(table, "program_directory.csv")
@@ -503,5 +535,7 @@ PAGES = {
 
 st.sidebar.title("📚 SD Literacy Dashboard")
 page = st.sidebar.radio("Page", list(PAGES), label_visibility="collapsed")
+st.sidebar.toggle("Street background on maps", key="street_basemap",
+                  help="Adds a street map behind the ZIP codes. Needs WebGL; turn off if maps look empty.")
 st.sidebar.divider()
 PAGES[page]()
